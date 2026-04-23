@@ -131,9 +131,9 @@ See also: `infra/compose/DR_RUNBOOK.md`.
 - Source code is bind-mounted into containers.
 
 ## WhatsApp Session Persistence
-- Gateway stores Neonize auth/session state in Docker volume `gateway_session`.
+- Gateway stores Neonize auth/session state under the repo-local `data/gateway/session` bind mount.
 - Session DB path is `NEONIZE_DATABASE_PATH=/data/neonize.db`.
-- Restarting containers keeps the WhatsApp session; removing the volume resets it.
+- Restarting containers keeps the WhatsApp session; removing `data/gateway/session` resets it.
 
 ## Next Step
 1. Data model + first Alembic migrations
