@@ -4,23 +4,17 @@ import { authenticateUser, ensureRequiredAdminAccount } from "@/lib/db/auth-repo
 import { isMissingRelationError } from "@/lib/db/postgres";
 import { setSessionCookie } from "@/lib/auth/session";
 
-function baseUrlFromRequest(request: Request): string {
-  const host =
-    request.headers.get("x-forwarded-host") ??
-    request.headers.get("host") ??
-    "localhost:3000";
-  const proto = request.headers.get("x-forwarded-proto") ?? "http";
-  return `${proto}://${host}`;
+function redirect303(request: Request, path: string): Response {
+  return NextResponse.redirect(new URL(path, request.url), 303);
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const baseUrl = baseUrlFromRequest(request);
   const formData = await request.formData();
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
 
   if (!email || !password) {
-    return NextResponse.redirect(new URL("/login?error=missing", baseUrl));
+    return redirect303(request, "/login?error=missing");
   }
 
   try {
@@ -28,11 +22,11 @@ export async function POST(request: Request): Promise<Response> {
 
     const user = await authenticateUser(email, password);
     if (!user) {
-      return NextResponse.redirect(new URL("/login?error=invalid", baseUrl));
+      return redirect303(request, "/login?error=invalid");
     }
 
     if (!user.isActive) {
-      return NextResponse.redirect(new URL("/locked?reason=inactive", baseUrl));
+      return redirect303(request, "/locked?reason=inactive");
     }
 
     await setSessionCookie({
@@ -45,16 +39,16 @@ export async function POST(request: Request): Promise<Response> {
     });
 
     if (user.mustChangePassword) {
-      return NextResponse.redirect(new URL("/first-password-change", baseUrl));
+      return redirect303(request, "/first-password-change");
     }
 
-    return NextResponse.redirect(new URL("/overview", baseUrl));
+    return redirect303(request, "/overview");
   } catch (error) {
     console.error("[dashboard-auth] login failed", error);
     if (isMissingRelationError(error)) {
-      return NextResponse.redirect(new URL("/login?error=schema-missing", baseUrl));
+      return redirect303(request, "/login?error=schema-missing");
     }
-    return NextResponse.redirect(new URL("/login?error=db", baseUrl));
+    return redirect303(request, "/login?error=db");
   }
 }
 
