@@ -30,3 +30,12 @@ class GatewayQrStatus:
         with self._lock:
             return {"qr": self.current_qr, "updated_at": self.updated_at}
 
+    def clear(self, *, reason: str | None = None) -> None:
+        """Clear QR status on connection lifecycle changes.
+
+        The QR code is only meaningful while disconnected / pairing.
+        """
+        with self._lock:
+            self.current_qr = None
+            self.updated_at = _utc_now_iso()
+
