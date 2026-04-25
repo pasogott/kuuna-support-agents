@@ -696,6 +696,7 @@ export async function fetchMessages(providerGroupId?: string): Promise<MessageRe
         -- (e.g. sender key distribution, protocol/app-state sync) unless they have media.
         mv.preview_text is null
         and not exists (select 1 from media_assets ma2 where ma2.message_id = m.id)
+        and mv.is_deleted is not true
         and (
           (mv.raw_event->'Message') ? 'senderKeyDistributionMessage'
           or (mv.raw_event->'Message') ? 'protocolMessage'
