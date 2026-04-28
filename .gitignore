@@ -77,6 +77,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+### Repo-local runtime data ###
+/data/**
+!/data/.gitkeep
+
 # local env files
 .env*.local
 

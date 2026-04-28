@@ -67,11 +67,21 @@ class NeonizeEventBridge:
     def on_connected(self) -> None:
         if self.connection_status is not None:
             self.connection_status.mark_connected(event="connected")
+        if self.qr_provider is not None:
+            try:
+                self.qr_provider.clear(reason="connected")
+            except Exception:
+                logger.exception("gateway_qr_clear_failed", extra={"reason": "connected"})
         logger.info("gateway_connected")
 
     def on_disconnected(self) -> None:
         if self.connection_status is not None:
             self.connection_status.mark_disconnected(event="disconnected")
+        if self.qr_provider is not None:
+            try:
+                self.qr_provider.clear(reason="disconnected")
+            except Exception:
+                logger.exception("gateway_qr_clear_failed", extra={"reason": "disconnected"})
         logger.warning("gateway_disconnected")
 
     def on_connect_failure(self, neonize_event: Any) -> None:
@@ -87,6 +97,11 @@ class NeonizeEventBridge:
     def on_logged_out(self) -> None:
         if self.connection_status is not None:
             self.connection_status.mark_disconnected(event="logged_out")
+        if self.qr_provider is not None:
+            try:
+                self.qr_provider.clear(reason="logged_out")
+            except Exception:
+                logger.exception("gateway_qr_clear_failed", extra={"reason": "logged_out"})
         logger.warning("gateway_logged_out")
 
     def on_keepalive_timeout(self) -> None:
@@ -156,7 +171,7 @@ class NeonizeEventBridge:
         *,
         client: Any,
         connected_event_type: Any,
-        qr_event_type: Any,
+        qr_event_type: Any | None = None,
         message_event_type: Any,
         disconnected_event_type: Any,
         connect_failure_event_type: Any,
@@ -164,16 +179,17 @@ class NeonizeEventBridge:
         keepalive_timeout_event_type: Any,
         keepalive_restored_event_type: Any,
     ) -> None:
-        @client.event(qr_event_type)
-        def _qr(_: Any, event: Any) -> None:
-            codes = getattr(event, "Codes", None)
-            if isinstance(codes, (list, tuple)) and codes:
-                code = str(codes[0]).strip()
-                if code and self.qr_provider is not None:
-                    try:
-                        self.qr_provider.set_qr(code)
-                    except Exception:
-                        logger.exception("gateway_qr_store_failed")
+        if qr_event_type is not None:
+            @client.event(qr_event_type)
+            def _qr(_: Any, event: Any) -> None:
+                codes = getattr(event, "Codes", None)
+                if isinstance(codes, (list, tuple)) and codes:
+                    code = str(codes[0]).strip()
+                    if code and self.qr_provider is not None:
+                        try:
+                            self.qr_provider.set_qr(code)
+                        except Exception:
+                            logger.exception("gateway_qr_store_failed")
 
         @client.event(connected_event_type)
         def _connected(_: Any, __: Any) -> None:

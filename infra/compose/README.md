@@ -18,14 +18,24 @@ just down
 - Worker: `watchfiles` restarts `rq worker` on Python file changes.
 - Gateway: `watchfiles` restarts Neonize bridge on Python file changes.
 
+## Repo-Local Data Mounts
+All Docker runtime and persistence mounts live under the repo-local `data/`
+directory via bind mounts. This includes `node_modules`, Python virtualenvs,
+gateway session state, PostgreSQL data, and MinIO data.
+
+Existing named Docker volumes are not migrated automatically. After pulling
+this change, old dev volumes remain in Docker but are no longer mounted by
+the dev stack.
+
 ## WhatsApp Session Persistence (Gateway)
-The gateway stores Neonize session state in the named Docker volume `gateway_session` at `/data`.
+The gateway stores Neonize session state in the repo-local path `data/gateway/session`
+mounted at `/data`.
 `NEONIZE_DATABASE_PATH` defaults to `/data/neonize.db`, so login/session state survives container restarts.
 
 Reset session state intentionally:
 
 ```bash
-docker volume rm kuuna-dev_gateway_session
+just reset-whatsapp-session
 ```
 
 ## Smoke Gates

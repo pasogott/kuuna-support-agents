@@ -92,14 +92,11 @@ export default async function TemplateDetailPage({
     ? versions.find((version) => version.id === cloneFromVersionId)
     : undefined;
   const systemPromptDefault =
-    cloneSource?.systemPrompt ??
     "You are a concise WhatsApp support assistant. Reply in clear German and provide concrete next steps.";
   const modelChainPrefill = cloneSource?.modelChain?.length
     ? csvOrEmpty(cloneSource.modelChain)
     : modelChainDefault;
-  const allowedToolsPrefill = cloneSource?.allowedTools?.length
-    ? csvOrEmpty(cloneSource.allowedTools)
-    : "echo, uppercase";
+  const allowedToolsPrefill = "echo, uppercase";
   const egressModePrefill = cloneSource?.egressPolicy ?? "restricted";
 
   const publishedVersionIds = Array.from(

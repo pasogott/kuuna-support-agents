@@ -8,7 +8,7 @@ import { setSessionCookie } from "@/lib/auth/session";
  * After a form POST, redirect must be **303 See Other** so the browser follows with **GET** (PRG).
  * NextResponse.redirect() defaults to **307**, which preserves POST and can yield POST /overview (405/odd behavior).
  */
-function redirect303(path: string, request: Request) {
+function redirect303(path: string, request: Request): Response {
   return NextResponse.redirect(new URL(path, request.url), 303);
 }
 

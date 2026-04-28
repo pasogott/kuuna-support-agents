@@ -39,7 +39,8 @@ shell-dashboard:
     docker compose -f {{compose_file}} exec dashboard sh
 
 reset-whatsapp-session:
-    docker volume rm kuuna-dev_gateway_session
+    docker compose -f {{compose_file}} stop gateway
+    rm -rf data/gateway/session
 
 smoke-docker:
     bash infra/compose/smoke/docker-smoke.sh
