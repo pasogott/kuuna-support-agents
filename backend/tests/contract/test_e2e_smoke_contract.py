@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from kuuna_backend.db.models import Message, OutboundIntent, Role, RoleName, User, UserRole
+from kuuna_backend.db.models import (
+    Message,
+    OutboundIntent,
+    Role,
+    RoleName,
+    TemplateBuild,
+    TemplateBuildStatus,
+    TemplateVersion,
+    User,
+    UserRole,
+)
 from kuuna_backend.domain.auth.service import hash_password
 from kuuna_backend.jobs import ingest as ingest_jobs
 import kuuna_backend.domain.messages.ingest as ingest_domain
@@ -46,6 +56,17 @@ def test_e2e_smoke_login_bind_ingest_route_reply_trace(
     monkeypatch.setattr(ingest_domain, "enqueue_inbound_execution", lambda *args, **kwargs: "job-inbound")
     monkeypatch.setattr(ingest_jobs, "enqueue_outbound_dispatch", lambda *args, **kwargs: "job-outbound")
     monkeypatch.setattr(ingest_jobs, "get_db_session", lambda: test_session_factory())
+    monkeypatch.setattr(
+        ingest_jobs,
+        "_run_via_runtime_agent",
+        lambda **kwargs: {
+            "success": True,
+            "response_text": "E2E smoke compiled reply",
+            "model_path": ["gpt-4.1-mini"],
+            "execution": {"image_ref": str(kwargs.get("image_ref") or ""), "duration_ms": 1},
+            "audit_payload": {"success": True},
+        },
+    )
 
     login_response = client.post(
         "/auth/login",
@@ -93,6 +114,22 @@ def test_e2e_smoke_login_bind_ingest_route_reply_trace(
     )
     assert binding_response.status_code == 201
     assert binding_response.json()["status"] == "active"
+
+    with test_session_factory() as db:
+        tv = db.get(TemplateVersion, UUID(version_id))
+        assert tv is not None
+        db.add(
+            TemplateBuild(
+                template_id=tv.template_id,
+                template_version_id=tv.id,
+                status=TemplateBuildStatus.SUCCEEDED,
+                image_ref="test/e2e-client-template:smoke",
+                image_tag="test/e2e-client-template:smoke",
+                build_inputs={},
+                logs_ref=None,
+            )
+        )
+        db.commit()
 
     trace_id = str(uuid4())
     provider_message_id = "e2e-msg-001"

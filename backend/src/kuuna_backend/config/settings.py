@@ -30,6 +30,12 @@ class Settings(BaseSettings):
 
     internal_ops_token: str | None = Field(default=None, alias="INTERNAL_OPS_TOKEN")
 
+    template_build_context_path: str = Field(
+        default="../../infra/runtime/template-agent",
+        alias="TEMPLATE_BUILD_CONTEXT_PATH",
+    )
+    docker_cli_path: str = Field(default="docker", alias="DOCKER_CLI_PATH")
+
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
     openai_timeout_seconds: float = Field(default=30.0, alias="OPENAI_TIMEOUT_SECONDS")

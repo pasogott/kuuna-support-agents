@@ -63,6 +63,17 @@ def enqueue_inbound_execution(
     return job.id
 
 
+def enqueue_template_build(build_id: str) -> str:
+    queue = get_default_queue()
+    normalized_id = build_id.replace("-", "_")
+    job = queue.enqueue(
+        "kuuna_backend.jobs.template_build.process_template_build_job",
+        build_id,
+        job_id=f"template_build_{normalized_id}",
+    )
+    return job.id
+
+
 def enqueue_knowledge_indexing(knowledge_version_id: str, trace_id: str | None = None) -> str:
     queue = get_default_queue()
     normalized_id = knowledge_version_id.replace("-", "_")

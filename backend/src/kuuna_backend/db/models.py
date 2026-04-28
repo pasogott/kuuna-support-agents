@@ -89,6 +89,21 @@ class ToolRiskClass(str, enum.Enum):
     ADMIN = "admin"
 
 
+class TemplateBuildStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class RuntimeRunStatus(str, enum.Enum):
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+
+
 def db_enum(enum_cls: type[enum.Enum], *, name: str) -> Enum:
     return Enum(
         enum_cls,
@@ -195,6 +210,67 @@ class TemplateVersion(Base, TimestampMixin):
     model_config: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
     tools_config: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
     egress_policy: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class TemplateBuild(Base, TimestampMixin):
+    __tablename__ = "template_builds"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("group_templates.id", ondelete="CASCADE"), nullable=False
+    )
+    template_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("template_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[TemplateBuildStatus] = mapped_column(
+        db_enum(TemplateBuildStatus, name="template_build_status"),
+        nullable=False,
+        default=TemplateBuildStatus.QUEUED,
+    )
+    image_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    image_tag: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    build_inputs: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    logs_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+
+class RuntimeRun(Base, TimestampMixin):
+    __tablename__ = "runtime_runs"
+    __table_args__ = (
+        Index("ix_runtime_runs_provider_group_id_started_at", "provider_group_id", "started_at"),
+        Index("ix_runtime_runs_message_id_started_at", "message_id", "started_at"),
+        Index("ix_runtime_runs_binding_id_started_at", "binding_id", "started_at"),
+        Index(
+            "ix_runtime_runs_template_version_id_started_at",
+            "template_version_id",
+            "started_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_group_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+    binding_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("group_bindings.id", ondelete="CASCADE"), nullable=False
+    )
+    template_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("template_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    template_build_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("template_builds.id", ondelete="SET NULL"), nullable=True
+    )
+    image_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[RuntimeRunStatus] = mapped_column(
+        db_enum(RuntimeRunStatus, name="runtime_run_status"),
+        nullable=False,
+        default=RuntimeRunStatus.STARTED,
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    execution: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
 
 
 class GroupBinding(Base, TimestampMixin):

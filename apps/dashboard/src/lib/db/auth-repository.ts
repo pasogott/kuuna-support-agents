@@ -77,6 +77,45 @@ function verifyScryptPassword(password: string, encodedHash: string): boolean {
   return timingSafeEqual(Buffer.from(derivedDigest, "hex"), Buffer.from(storedDigest, "hex"));
 }
 
+/**
+ * `kuuna_backend` uses `scrypt$N$r$p$<salt_hex>$<digest_hex>` (see
+ * `hash_password` in `backend/src/kuuna_backend/domain/auth/service.py`). Dashboard
+ * bootstraps with a different `scrypt:...` encoding; users first created via the
+ * API/backend must be verified with this path.
+ */
+function verifyBackendScryptPassword(password: string, encodedHash: string): boolean {
+  const parts = encodedHash.split("$");
+  if (parts.length < 6 || parts[0] !== "scrypt") {
+    return false;
+  }
+  const N = Number.parseInt(parts[1] ?? "", 10);
+  const r = Number.parseInt(parts[2] ?? "", 10);
+  const p = Number.parseInt(parts[3] ?? "", 10);
+  const saltHex = parts[4] ?? "";
+  const digestHex = parts.slice(5).join("$");
+  if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p) || !saltHex || !digestHex) {
+    return false;
+  }
+  const salt = Buffer.from(saltHex, "hex");
+  const expected = Buffer.from(digestHex, "hex");
+  if (expected.length === 0) {
+    return false;
+  }
+  const maxmem = 256 * 1024 * r * Math.max(1, p);
+  let derived: Buffer;
+  try {
+    derived = scryptSync(password, salt, expected.length, {
+      N,
+      r,
+      p,
+      maxmem: Math.max(maxmem, 32 * 1024 * 1024),
+    });
+  } catch {
+    return false;
+  }
+  return derived.length === expected.length && timingSafeEqual(derived, expected);
+}
+
 async function verifyPassword(password: string, passwordHash: string): Promise<boolean> {
   if (passwordHash.startsWith("$2")) {
     const compare = await loadBcryptCompareFn();
@@ -84,6 +123,10 @@ async function verifyPassword(password: string, passwordHash: string): Promise<b
       return false;
     }
     return compare(password, passwordHash);
+  }
+
+  if (passwordHash.startsWith("scrypt$")) {
+    return verifyBackendScryptPassword(password, passwordHash);
   }
 
   if (passwordHash.startsWith("scrypt:")) {
@@ -144,6 +187,23 @@ export async function ensureRequiredAdminAccount(): Promise<void> {
 
   if (!adminId) {
     return;
+  }
+
+  if (
+    process.env.DASHBOARD_DEV_RESET_BOOTSTRAP_ADMIN_PASSWORD === "1" &&
+    process.env.NODE_ENV !== "production"
+  ) {
+    const resetHash = hashPasswordWithScrypt(REQUIRED_ADMIN_PASSWORD);
+    await dbQuery(
+      `
+      update users
+      set password_hash = $2,
+          must_change_password = true,
+          updated_at = now()
+      where id = $1::uuid
+      `,
+      [adminId, resetHash],
+    );
   }
 
   await dbQuery(

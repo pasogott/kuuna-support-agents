@@ -18,11 +18,16 @@ import { Notice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { getTemplate, listTemplateVersions } from "@/lib/api-client";
+import { TemplateBuildAutoRefresh } from "@/components/templates/template-build-auto-refresh";
+import { getTemplate, listTemplateBuilds, listTemplateVersions } from "@/lib/api-client";
+import type { TemplateBuild } from "@/lib/api-client/types";
+import { requireAuthorized } from "@/lib/auth/guards";
+import { isAdminRole } from "@/lib/permissions/matrix";
 import {
   createTemplateDraftVersionAction,
   publishTemplateVersionAction,
 } from "@/lib/templates/actions";
+import { queueTemplateBuildAction } from "@/lib/templates/template-build-actions";
 import { formatDateTime } from "@/lib/utils/format";
 
 type Params = Promise<{ templateId: string }>;
@@ -57,6 +62,9 @@ export default async function TemplateDetailPage({
   params: Params;
   searchParams: SearchParams;
 }) {
+  const session = await requireAuthorized("templates", "read");
+  const canManageTemplateBuilds = isAdminRole(session.role);
+
   const { templateId } = await params;
   const search = await searchParams;
   const created = getSingleParam(search.created);
@@ -65,15 +73,19 @@ export default async function TemplateDetailPage({
   const versionId = getSingleParam(search.versionId);
   const cloneFromVersionId = getSingleParam(search.cloneFromVersionId);
   const error = getSingleParam(search.error);
+  const buildQueued = getSingleParam(search.buildQueued);
+  const buildId = getSingleParam(search.buildId);
 
-  const [template, versions] = await Promise.all([
+  const [templateMaybe, versions] = await Promise.all([
     getTemplate(templateId),
     listTemplateVersions(templateId),
   ]);
 
-  if (!template) {
+  if (!templateMaybe) {
     notFound();
   }
+
+  const template = templateMaybe;
 
   const modelChainDefault = defaultModelChain(versions);
   const cloneSource = cloneFromVersionId
@@ -87,8 +99,39 @@ export default async function TemplateDetailPage({
   const allowedToolsPrefill = "echo, uppercase";
   const egressModePrefill = cloneSource?.egressPolicy ?? "restricted";
 
+  const publishedVersionIds = Array.from(
+    new Set(
+      versions.filter((version) => version.status === "published").map((version) => version.id),
+    ),
+  );
+
+  const templateBuildsByVersionId: Record<string, TemplateBuild[]> = {};
+
+  if (canManageTemplateBuilds && publishedVersionIds.length > 0) {
+    const results = await Promise.all(
+      publishedVersionIds.map(async (id) => {
+        const items = await listTemplateBuilds(template.id, id);
+        return { id, items };
+      }),
+    );
+
+    for (const entry of results) {
+      templateBuildsByVersionId[entry.id] = entry.items;
+    }
+  }
+
+  const templateBuildRefreshActive = canManageTemplateBuilds
+    ? Object.values(templateBuildsByVersionId).some((items) =>
+        items.some((build) => build.status === "queued" || build.status === "running"),
+      )
+    : false;
+
   return (
     <div className="flex flex-col gap-8">
+      {canManageTemplateBuilds ? (
+        <TemplateBuildAutoRefresh active={templateBuildRefreshActive} />
+      ) : null}
+
       <PageHeader
         title={template.displayName}
         description={`Template key: ${template.key}`}
@@ -133,6 +176,22 @@ export default async function TemplateDetailPage({
             </p>
           ) : null}
           <p>You can now bind a group using this version.</p>
+        </Notice>
+      ) : null}
+
+      {buildQueued === "1" ? (
+        <Notice title="Template-Build gestartet" tone="success">
+          {buildId ? (
+            <p>
+              Build-ID:{" "}
+              <code className="rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">
+                {buildId}
+              </code>
+            </p>
+          ) : null}
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            Status aktualisiert sich automatisch alle paar Sekunden, solange der Build läuft.
+          </p>
         </Notice>
       ) : null}
 
@@ -329,6 +388,135 @@ export default async function TemplateDetailPage({
           />
         </CardContent>
       </Card>
+
+      {canManageTemplateBuilds ? (
+        <Card className="overflow-hidden">
+          <CardHeader>
+            <CardTitle>Runtime-Images (published)</CardTitle>
+            <CardDescription>
+              Docker-Builds pro veröffentlichter Template-Version. Builds laufen asynchron im Worker
+              (Docker-Socket) und landen als <span className="font-mono">image_ref</span> in{" "}
+              <span className="font-mono">template_builds</span>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6 pb-6">
+            {publishedVersionIds.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Noch keine published Version — publish zuerst, dann kannst du Images bauen.
+              </p>
+            ) : (
+              publishedVersionIds.map((publishedVersionId) => {
+                const publishedVersion = versions.find((v) => v.id === publishedVersionId);
+                const builds = templateBuildsByVersionId[publishedVersionId] ?? [];
+
+                return (
+                  <div key={publishedVersionId} className="space-y-3">
+                    <div className="flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">
+                          Version{" "}
+                          <span className="font-mono text-xs">
+                            v{publishedVersion?.versionNo ?? "?"}
+                          </span>
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Version-ID:{" "}
+                          <code className="rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                            {publishedVersionId}
+                          </code>
+                        </p>
+                      </div>
+
+                      <form action={queueTemplateBuildAction} className="w-full md:max-w-xl">
+                        <input type="hidden" name="templateId" value={template.id} />
+                        <input type="hidden" name="versionId" value={publishedVersionId} />
+
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end">
+                          <FormRow label="Base image" htmlFor={`baseImage-${publishedVersionId}`}>
+                            <Input
+                              id={`baseImage-${publishedVersionId}`}
+                              name="baseImage"
+                              placeholder="python:3.12-slim-bookworm"
+                              required
+                            />
+                          </FormRow>
+
+                          <FormRow
+                            label="Allowed tools (optional)"
+                            htmlFor={`allowedTools-${publishedVersionId}`}
+                            hint="Komma-separiert; leer = Template-Default."
+                          >
+                            <Input
+                              id={`allowedTools-${publishedVersionId}`}
+                              name="allowedTools"
+                              placeholder="echo, uppercase"
+                            />
+                          </FormRow>
+
+                          <FormActions className="md:justify-end">
+                            <Button type="submit" variant="outline">
+                              Build starten
+                            </Button>
+                          </FormActions>
+                        </div>
+                      </form>
+                    </div>
+
+                    <SimpleTable
+                      data={builds}
+                      emptyMessage="Noch keine Builds für diese Version."
+                      columns={[
+                        {
+                          header: "Build",
+                          cell: (build) => (
+                            <code className="rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                              {build.id}
+                            </code>
+                          ),
+                        },
+                        {
+                          header: "Status",
+                          cell: (build) => <StatusBadge status={build.status} />,
+                        },
+                        {
+                          header: "Image",
+                          cell: (build) => (
+                            <div className="space-y-1">
+                              {build.imageRef ? (
+                                <p className="font-mono text-[11px] text-foreground">{build.imageRef}</p>
+                              ) : (
+                                <p className="text-xs text-muted-foreground">n/a</p>
+                              )}
+                              {build.imageTag ? (
+                                <p className="font-mono text-[11px] text-muted-foreground">{build.imageTag}</p>
+                              ) : null}
+                            </div>
+                          ),
+                        },
+                        {
+                          header: "Logs",
+                          cell: (build) =>
+                            build.logsRef ? (
+                              <span className="font-mono text-[11px] text-foreground">{build.logsRef}</span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">n/a</span>
+                            ),
+                        },
+                        {
+                          header: "Updated",
+                          cell: (build) => (
+                            <span className="text-xs text-muted-foreground">{formatDateTime(build.updatedAt)}</span>
+                          ),
+                        },
+                      ]}
+                    />
+                  </div>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }

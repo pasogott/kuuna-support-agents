@@ -49,15 +49,19 @@ services:
       context: ../../backend
       dockerfile: Dockerfile.dev
     working_dir: /app
-    command: sh -c 'uv sync && uv run watchfiles --filter python "uv run rq worker default" src'
+    # Migrations are owned by the `backend` service to avoid concurrent DDL / enum races.
+    command: sh -c "uv sync && uv run watchfiles --filter python 'uv run rq worker default' src"
     env_file:
       - ../env/backend.env.example
       - ../env/backend.env.local
     environment:
       WATCHFILES_FORCE_POLLING: "true"
+      TEMPLATE_BUILD_CONTEXT_PATH: /template-build-context
     volumes:
       - ../../backend:/app
       - ../../data/worker/.venv:/app/.venv
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../infra/runtime/template-agent:/template-build-context:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,6 +86,7 @@ services:
     volumes:
       - ../../services/runtime-agent:/app
       - ../../data/runtime-agent/.venv:/app/.venv
+      - /var/run/docker.sock:/var/run/docker.sock
 
   gateway:
     build:
@@ -93,6 +98,8 @@ services:
       - ../env/gateway.env.example
     environment:
       WATCHFILES_FORCE_POLLING: "true"
+    ports:
+      - "8090:8090"
     volumes:
       - ../../services/gateway:/app
       - ../../data/gateway/.venv:/app/.venv

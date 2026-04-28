@@ -10,8 +10,42 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from result_schema import RunnerInput, ToolInvocation
+from result_schema import RunnerInput, RuntimeAgentResult, ToolInvocation
 from runner import run_agent
+
+
+def test_run_agent_delegates_to_docker_when_image_ref_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[RunnerInput] = []
+
+    def fake_run_template_client_image(*, request: RunnerInput, prompt) -> RuntimeAgentResult:
+        calls.append(request)
+        return RuntimeAgentResult(
+            success=True,
+            prompt=prompt.full_prompt,
+            system_prompt=prompt.system_message,
+            user_prompt=prompt.user_message,
+            context_block=prompt.context_message,
+            model_used="from-docker",
+            response_text="delegated",
+        )
+
+    monkeypatch.setattr("runner.run_template_client_image", fake_run_template_client_image)
+
+    request = RunnerInput(
+        system_prompt="sys",
+        user_prompt="user",
+        context={"k": "v"},
+        model_path=["gpt-4.1-mini"],
+        allowed_tools=[],
+        image_ref="kuuna/template-x:build-abc",
+    )
+    result = run_agent(request)
+
+    assert len(calls) == 1
+    assert calls[0].image_ref == "kuuna/template-x:build-abc"
+    assert result.success is True
+    assert result.response_text == "delegated"
+    assert result.model_used == "from-docker"
 
 
 def test_run_agent_happy_path_with_failover_and_tool_execution(monkeypatch: pytest.MonkeyPatch) -> None:

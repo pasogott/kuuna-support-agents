@@ -1,0 +1,26 @@
+{
+  "name": "cursor-open-time-tracker",
+  "displayName": "Cursor Open Time Tracker (local)",
+  "description": "Tracks focused time in Cursor/VS Code for this repo and appends JSONL events to logs/cursor-open-time.jsonl (with periodic checkpoints).",
+  "version": "0.2.0",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cursorOpenTime.flush",
+        "title": "Cursor Open Time: Flush (checkpoint)"
+      },
+      {
+        "command": "cursorOpenTime.showToday",
+        "title": "Cursor Open Time: Show Today (Output)"
+      }
+    ]
+  }
+}

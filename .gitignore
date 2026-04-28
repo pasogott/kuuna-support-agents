@@ -93,7 +93,7 @@ next-env.d.ts
 
 ### Node ###
 # Logs
-logs
+/logs/
 *.log
 lerna-debug.log*
 
@@ -476,3 +476,8 @@ $RECYCLE.BIN/
 !infra/env/*.env.example
 # Keep local secret overrides out of git
 infra/env/*.local
+
+# Cursor open-time tracker (local extension + generated log)
+!/logs/
+!/logs/.gitkeep
+/logs/cursor-open-time.jsonl

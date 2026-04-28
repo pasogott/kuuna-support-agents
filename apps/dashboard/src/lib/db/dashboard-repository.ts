@@ -91,6 +91,45 @@ function parseToolProfile(input: unknown): string {
   return "default";
 }
 
+function parseAllowedTools(input: unknown): string[] {
+  if (!input || typeof input !== "object") {
+    return [];
+  }
+
+  const toolsConfig = input as Record<string, unknown>;
+  const candidates: string[] = [];
+
+  for (const key of ["allowed_tools", "allowedTools"]) {
+    const raw = toolsConfig[key];
+    if (Array.isArray(raw)) {
+      candidates.push(...raw.filter((item): item is string => typeof item === "string"));
+    }
+  }
+
+  const rawTools = toolsConfig.tools;
+  if (Array.isArray(rawTools)) {
+    for (const item of rawTools) {
+      if (typeof item === "string") {
+        candidates.push(item);
+      } else if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        if (typeof record.name === "string" && record.enabled !== false) {
+          candidates.push(record.name);
+        }
+      }
+    }
+  }
+
+  const normalized: string[] = [];
+  for (const candidate of candidates) {
+    const value = candidate.trim().toLowerCase();
+    if (value && !normalized.includes(value)) {
+      normalized.push(value);
+    }
+  }
+  return normalized;
+}
+
 function parseEgressPolicy(input: unknown): string {
   if (!input || typeof input !== "object") {
     return "default";
@@ -204,6 +243,7 @@ type DbTemplateVersionRow = {
   template_id: string;
   version_no: number;
   status: string;
+  system_prompt: string | null;
   model_config: unknown;
   tools_config: unknown;
   egress_policy: unknown;
@@ -218,6 +258,7 @@ export async function fetchTemplateVersions(templateId: string): Promise<Templat
       template_id::text,
       version_no,
       status::text,
+      system_prompt,
       model_config,
       tools_config,
       egress_policy,
@@ -234,7 +275,9 @@ export async function fetchTemplateVersions(templateId: string): Promise<Templat
     templateId: row.template_id,
     versionNo: row.version_no,
     status: toWorkflowStatus(row.status),
+    systemPrompt: row.system_prompt ?? undefined,
     modelChain: parseModelChain(row.model_config),
+    allowedTools: parseAllowedTools(row.tools_config),
     toolProfile: parseToolProfile(row.tools_config),
     egressPolicy: parseEgressPolicy(row.egress_policy),
     updatedAt: row.updated_at,
@@ -680,6 +723,19 @@ export async function fetchMessages(providerGroupId?: string): Promise<MessageRe
         is_deleted,
         raw_event,
         case
+          when is_deleted then coalesce(
+            (
+              select mv2.text_content
+              from message_versions mv2
+              where mv2.message_id = m.id
+                and mv2.is_deleted is false
+                and mv2.text_content is not null
+                and btrim(mv2.text_content) <> ''
+              order by mv2.version_no desc
+              limit 1
+            ),
+            '[deleted]'
+          )
           when text_content is not null and btrim(text_content) <> '' then text_content
           when raw_event #>> '{Info,Type}' = 'reaction' then '[reaction]'
           when raw_event #>> '{Info,Type}' = 'media' then '[media]'
@@ -696,7 +752,7 @@ export async function fetchMessages(providerGroupId?: string): Promise<MessageRe
         -- (e.g. sender key distribution, protocol/app-state sync) unless they have media.
         mv.preview_text is null
         and not exists (select 1 from media_assets ma2 where ma2.message_id = m.id)
-        and mv.is_deleted is not true
+        and coalesce(mv.is_deleted, false) = false
         and (
           (mv.raw_event->'Message') ? 'senderKeyDistributionMessage'
           or (mv.raw_event->'Message') ? 'protocolMessage'

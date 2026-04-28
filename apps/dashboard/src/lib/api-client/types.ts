@@ -8,7 +8,17 @@ export type WorkflowStatus =
   | "provisioning"
   | "failed"
   | "queued"
-  | "processing";
+  | "processing"
+  | "running"
+  | "succeeded"
+  | "cancelled";
+
+export type TemplateBuildStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
 
 export type GroupTemplate = {
   id: string;
@@ -24,11 +34,26 @@ export type TemplateVersion = {
   templateId: string;
   versionNo: number;
   status: WorkflowStatus;
+  systemPrompt?: string;
   modelChain: string[];
+  allowedTools?: string[];
   toolProfile: string;
   egressPolicy: string;
   updatedAt: string;
   updatedBy: string;
+};
+
+export type TemplateBuild = {
+  id: string;
+  templateId: string;
+  templateVersionId: string;
+  status: TemplateBuildStatus;
+  imageRef?: string;
+  imageTag?: string;
+  buildInputs: Record<string, unknown>;
+  logsRef?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type GroupBinding = {
@@ -81,6 +106,24 @@ export type PromptAsset = {
   versionNo: number;
   updatedAt: string;
   updatedBy: string;
+};
+
+export type RuntimeRunStatus = "started" | "succeeded" | "failed" | "timeout";
+
+export type RuntimeRun = {
+  id: string;
+  providerGroupId: string;
+  messageId?: string;
+  bindingId: string;
+  templateVersionId: string;
+  templateBuildId?: string;
+  imageRef: string;
+  status: RuntimeRunStatus;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  error?: string;
+  execution: Record<string, unknown>;
 };
 
 export type KnowledgeDoc = {

@@ -18,6 +18,8 @@ from kuuna_backend.db.models import (
     OutboundIntent,
     RuntimeStatus,
     RuntimeMode,
+    TemplateBuild,
+    TemplateBuildStatus,
     TemplateVersion,
     TemplateVersionStatus,
 )
@@ -43,6 +45,19 @@ def _seed_active_binding(
         egress_policy={},
     )
     db.add(template_version)
+    db.flush()
+
+    db.add(
+        TemplateBuild(
+            template_id=template.id,
+            template_version_id=template_version.id,
+            status=TemplateBuildStatus.SUCCEEDED,
+            image_ref="test/client-template:unit",
+            image_tag="test/client-template:unit",
+            build_inputs={},
+            logs_ref=None,
+        )
+    )
     db.flush()
 
     binding = GroupBinding(
@@ -155,6 +170,7 @@ def test_process_inbound_message_job_fallback_reply_contains_context_hint(
     monkeypatch.setattr(ingest_jobs, "get_db_session", lambda: test_session_factory())
     monkeypatch.setattr(ingest_jobs, "enqueue_outbound_dispatch", lambda _: "job-outbound")
     monkeypatch.setattr(ingest_jobs, "is_openai_configured", lambda: False)
+    monkeypatch.setattr(ingest_jobs, "_run_via_runtime_agent", lambda **kwargs: None)
 
     ingest_jobs.process_inbound_message_job(
         message_id=message_id,

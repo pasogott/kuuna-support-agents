@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Callable
 from uuid import UUID, uuid4
 
@@ -17,10 +18,19 @@ from kuuna_backend.db.models import (
     Message,
     MessageVersion,
     RuntimeStatus,
+    RuntimeRun,
+    RuntimeRunStatus,
     TemplateVersion,
 )
+from kuuna_backend.domain.runtime.resolve import (
+    NoBindingError,
+    NoSuccessfulBuildError,
+    resolve_runtime_target,
+)
 from kuuna_backend.domain.outbound.service import create_outbound_intent, mark_outbound_intent_failed
+from kuuna_backend.domain.audit.service import append_audit_event
 from kuuna_backend.domain.retrieval import RetrievalHit, retrieve_context
+from kuuna_backend.domain.templates.tools import extract_allowed_tools
 from kuuna_backend.integrations.openai import (
     OpenAIIntegrationError,
     create_chat_completion,
@@ -51,6 +61,7 @@ class AgentReply:
     model_path: list[str]
     retrieval_refs: list[dict[str, object]]
     allowed_tools: list[str]
+    runtime_execution: dict[str, object] | None = None
 
 
 def _tool_echo(value: str) -> str:
@@ -111,17 +122,13 @@ def process_inbound_message_job(
             )
             return
 
-        binding_row = db.execute(
-            select(GroupBinding, AgentInstance, TemplateVersion)
-            .join(TemplateVersion, TemplateVersion.id == GroupBinding.template_version_id)
-            .outerjoin(AgentInstance, AgentInstance.group_binding_id == GroupBinding.id)
-            .where(
-                GroupBinding.provider_group_id == provider_group_id,
-                GroupBinding.status == BindingStatus.ACTIVE,
+        try:
+            resolved = resolve_runtime_target(
+                db,
+                provider_group_id=provider_group_id,
+                require_successful_build=True,
             )
-            .limit(1)
-        ).one_or_none()
-        if binding_row is None:
+        except NoBindingError:
             logger.info(
                 "inbound_execution_skipped_unbound_group",
                 extra={
@@ -132,8 +139,39 @@ def process_inbound_message_job(
                 },
             )
             return
+        except NoSuccessfulBuildError:
+            logger.error(
+                "inbound_execution_skipped_no_successful_template_build",
+                extra={
+                    "trace_id": trace_id,
+                    "message_id": message_id,
+                    "provider_group_id": provider_group_id,
+                    "reason": reason,
+                },
+            )
+            return
 
-        binding, agent_instance, template_version = binding_row
+        binding = db.get(GroupBinding, resolved.binding_id)
+        template_version = db.get(TemplateVersion, resolved.template_version_id)
+        agent_instance = (
+            db.get(AgentInstance, resolved.agent_instance_id)
+            if resolved.agent_instance_id is not None
+            else None
+        )
+        if binding is None or template_version is None:
+            logger.error(
+                "inbound_execution_resolution_inconsistent",
+                extra={
+                    "trace_id": trace_id,
+                    "message_id": message_id,
+                    "provider_group_id": provider_group_id,
+                    "binding_id": str(resolved.binding_id),
+                    "template_version_id": str(resolved.template_version_id),
+                    "reason": reason,
+                },
+            )
+            return
+
         if agent_instance is None:
             logger.error(
                 "inbound_execution_missing_agent_instance",
@@ -171,12 +209,31 @@ def process_inbound_message_job(
         ).scalar_one_or_none()
         user_text = _extract_user_text(latest_message_version)
 
+        if not resolved.image_ref:
+            logger.error(
+                "inbound_execution_missing_image_ref_after_resolution",
+                extra={
+                    "trace_id": trace_id,
+                    "message_id": message_id,
+                    "provider_group_id": provider_group_id,
+                    "template_build_id": str(resolved.template_build_id)
+                    if resolved.template_build_id
+                    else None,
+                    "reason": reason,
+                },
+            )
+            return
+
         agent_reply = _generate_agent_reply(
             db=db,
             provider_group_id=provider_group_id,
             user_text=user_text,
             template_version=template_version,
             trace_id=trace_id,
+            image_ref=resolved.image_ref,
+            message_id=message.id,
+            binding_id=binding.id,
+            template_build_id=resolved.template_build_id,
         )
 
         outbound_intent = create_outbound_intent(
@@ -189,9 +246,25 @@ def process_inbound_message_job(
                 "text": agent_reply.text,
                 "metadata": {
                     "agent_instance_id": agent_instance.id,
+                    "binding_id": str(binding.id),
+                    "template_version_id": str(template_version.id),
+                    "template_build_id": (
+                        str(resolved.template_build_id)
+                        if resolved.template_build_id is not None
+                        else None
+                    ),
+                    "image_ref": resolved.image_ref,
+                    "runtime_run_id": (
+                        str(agent_reply.runtime_execution.get("runtime_run_id"))
+                        if isinstance(agent_reply.runtime_execution, dict)
+                        and isinstance(agent_reply.runtime_execution.get("runtime_run_id"), str)
+                        and agent_reply.runtime_execution.get("runtime_run_id")
+                        else None
+                    ),
                     "model_path": agent_reply.model_path,
                     "retrieval_refs": agent_reply.retrieval_refs,
                     "allowed_tools": agent_reply.allowed_tools,
+                    "runtime_execution": agent_reply.runtime_execution,
                 },
             },
         )
@@ -262,8 +335,12 @@ def _generate_agent_reply(
     user_text: str,
     template_version: TemplateVersion,
     trace_id: str | None,
+    image_ref: str,
+    message_id: UUID,
+    binding_id: UUID,
+    template_build_id: UUID | None,
 ) -> AgentReply:
-    allowed_tools = _extract_allowed_tools(template_version.tools_config)
+    allowed_tools = extract_allowed_tools(template_version.tools_config)
     model_candidates = _extract_model_candidates(template_version.model_config)
 
     retrieval_hits: list[RetrievalHit] = []
@@ -299,6 +376,25 @@ def _generate_agent_reply(
     )
     assembled_user_prompt = _build_user_prompt(user_text=user_text, retrieval_hits=retrieval_hits)
 
+    run = RuntimeRun(
+        provider_group_id=provider_group_id,
+        message_id=message_id,
+        binding_id=binding_id,
+        template_version_id=template_version.id,
+        template_build_id=template_build_id,
+        image_ref=image_ref,
+        status=RuntimeRunStatus.STARTED,
+        execution={
+            "trace_id": trace_id,
+            "requested": {
+                "model_path": model_candidates,
+                "allowed_tools": allowed_tools,
+            },
+        },
+    )
+    db.add(run)
+    db.flush()
+
     runtime_result = _run_via_runtime_agent(
         trace_id=trace_id,
         provider_group_id=provider_group_id,
@@ -307,14 +403,61 @@ def _generate_agent_reply(
         model_path=model_candidates,
         allowed_tools=allowed_tools,
         retrieval_refs=retrieval_refs,
+        image_ref=image_ref,
     )
     if runtime_result is not None:
-        response_text, runtime_model_path = runtime_result
+        execution = runtime_result.get("execution")
+        if isinstance(execution, dict):
+            run.execution = {**(run.execution or {}), **execution}
+
+        run.finished_at = datetime.now(UTC)
+        run.duration_ms = (
+            int(execution.get("duration_ms"))
+            if isinstance(execution, dict) and isinstance(execution.get("duration_ms"), int)
+            else run.duration_ms
+        )
+
+        if runtime_result.get("success") is True:
+            run.status = RuntimeRunStatus.SUCCEEDED
+            run.error = None
+        else:
+            timed_out = bool(execution.get("timed_out")) if isinstance(execution, dict) else False
+            run.status = RuntimeRunStatus.TIMEOUT if timed_out else RuntimeRunStatus.FAILED
+            run.error = str(runtime_result.get("audit_payload", {}).get("error") or runtime_result.get("error") or "")
+
+        append_audit_event(
+            db,
+            actor_user_id=None,
+            event_type="runtime.execution",
+            entity_type="message",
+            entity_id=str(message_id),
+            payload={
+                **(runtime_result.get("audit_payload", {}) if isinstance(runtime_result.get("audit_payload"), dict) else {}),
+                "runtime_run_id": str(run.id),
+                "binding_id": str(binding_id),
+                "template_version_id": str(template_version.id),
+                "template_build_id": str(template_build_id) if template_build_id else None,
+                "image_ref": image_ref,
+                "status": run.status.value,
+                "duration_ms": run.duration_ms,
+            },
+        )
+
+    if runtime_result is not None and runtime_result.get("success") is True:
+        response_text = str(runtime_result.get("response_text") or "").strip()
+        runtime_model_path = runtime_result.get("model_path") or []
+        execution_out = runtime_result.get("execution")
+        execution_with_id = (
+            {**execution_out, "runtime_run_id": str(run.id)}
+            if isinstance(execution_out, dict)
+            else {"runtime_run_id": str(run.id)}
+        )
         return AgentReply(
             text=response_text,
             model_path=runtime_model_path,
             retrieval_refs=retrieval_refs,
             allowed_tools=allowed_tools,
+            runtime_execution=execution_with_id,
         )
 
     if is_openai_configured():
@@ -351,36 +494,6 @@ def _generate_agent_reply(
         retrieval_refs=retrieval_refs,
         allowed_tools=allowed_tools,
     )
-
-
-def _extract_allowed_tools(tools_config: object) -> list[str]:
-    if not isinstance(tools_config, dict):
-        return []
-
-    candidates: list[str] = []
-
-    for key in ("allowed_tools", "allowedTools"):
-        raw = tools_config.get(key)
-        if isinstance(raw, list):
-            candidates.extend(item for item in raw if isinstance(item, str))
-
-    raw_tools = tools_config.get("tools")
-    if isinstance(raw_tools, list):
-        for item in raw_tools:
-            if isinstance(item, str):
-                candidates.append(item)
-            elif isinstance(item, dict):
-                name = item.get("name")
-                enabled = item.get("enabled", True)
-                if isinstance(name, str) and name and enabled is not False:
-                    candidates.append(name)
-
-    normalized: list[str] = []
-    for candidate in candidates:
-        value = candidate.strip().lower()
-        if value and value not in normalized:
-            normalized.append(value)
-    return normalized
 
 
 def _extract_model_candidates(model_config: object) -> list[str]:
@@ -488,7 +601,8 @@ def _run_via_runtime_agent(
     model_path: list[str],
     allowed_tools: list[str],
     retrieval_refs: list[dict[str, object]],
-) -> tuple[str, list[str]] | None:
+    image_ref: str,
+) -> dict[str, object] | None:
     payload = {
         "trace_id": trace_id,
         "system_prompt": system_prompt,
@@ -500,6 +614,7 @@ def _run_via_runtime_agent(
         "model_path": model_path,
         "allowed_tools": allowed_tools,
         "tool_requests": [],
+        "image_ref": image_ref,
     }
 
     try:
@@ -518,9 +633,24 @@ def _run_via_runtime_agent(
                 "error": str(exc),
             },
         )
-        return None
+        return {
+            "success": False,
+            "response_text": None,
+            "model_path": [],
+            "execution": None,
+            "audit_payload": {
+                "trace_id": trace_id,
+                "provider_group_id": provider_group_id,
+                "image_ref": image_ref,
+                "success": False,
+                "error": str(exc),
+            },
+        }
 
     result_payload = response.json()
+    execution = result_payload.get("execution") if isinstance(result_payload, dict) else None
+    error_value = result_payload.get("error") if isinstance(result_payload, dict) else None
+
     if not bool(result_payload.get("success")):
         logger.warning(
             "runtime_agent_execution_unsuccessful",
@@ -530,11 +660,37 @@ def _run_via_runtime_agent(
                 "error": str(result_payload.get("error")),
             },
         )
-        return None
+        return {
+            "success": False,
+            "response_text": None,
+            "model_path": [],
+            "execution": execution if isinstance(execution, dict) else None,
+            "audit_payload": {
+                "trace_id": trace_id,
+                "provider_group_id": provider_group_id,
+                "image_ref": image_ref,
+                "success": False,
+                "error": str(error_value or "runtime-agent unsuccessful"),
+                "execution": execution if isinstance(execution, dict) else None,
+            },
+        }
 
     response_text = str(result_payload.get("response_text") or "").strip()
     if not response_text:
-        return None
+        return {
+            "success": False,
+            "response_text": None,
+            "model_path": [],
+            "execution": execution if isinstance(execution, dict) else None,
+            "audit_payload": {
+                "trace_id": trace_id,
+                "provider_group_id": provider_group_id,
+                "image_ref": image_ref,
+                "success": False,
+                "error": "runtime-agent returned empty response_text",
+                "execution": execution if isinstance(execution, dict) else None,
+            },
+        }
 
     attempts = result_payload.get("attempts")
     attempt_models: list[str] = []
@@ -550,7 +706,22 @@ def _run_via_runtime_agent(
         if isinstance(model_used, str) and model_used:
             attempt_models = [model_used]
 
-    return response_text, (attempt_models or model_path[:1])
+    normalized_model_path = attempt_models or model_path[:1]
+
+    return {
+        "success": True,
+        "response_text": response_text,
+        "model_path": normalized_model_path,
+        "execution": execution if isinstance(execution, dict) else None,
+        "audit_payload": {
+            "trace_id": trace_id,
+            "provider_group_id": provider_group_id,
+            "image_ref": image_ref,
+            "success": True,
+            "model_path": normalized_model_path,
+            "execution": execution if isinstance(execution, dict) else None,
+        },
+    }
 
 
 def _build_retrieval_refs(retrieval_hits: list[RetrievalHit]) -> list[dict[str, object]]:

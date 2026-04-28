@@ -10,6 +10,7 @@ import {
 import { Notice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import { getTraceDetail } from "@/lib/api-client";
+import Link from "next/link";
 
 type Params = Promise<{ traceId: string }>;
 
@@ -41,6 +42,16 @@ export default async function TraceDetailPage({
       <PageHeader
         title={`Trace ${detail.traceId}`}
         description="End-to-end correlation across ingest, retrieval, model path, and outbound intent."
+        actions={
+          detail.providerGroupId ? (
+            <Link
+              href={`/audit/runs?providerGroupId=${encodeURIComponent(detail.providerGroupId)}`}
+              className="text-sm text-primary hover:underline"
+            >
+              View runtime runs
+            </Link>
+          ) : null
+        }
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

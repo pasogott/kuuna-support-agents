@@ -16,7 +16,12 @@ class ToolInvocation(BaseModel):
 
 
 class RunnerInput(BaseModel):
-    """Validated runtime-agent input payload."""
+    """Validated runtime-agent input payload.
+
+    When ``image_ref`` is set, the service runs ``docker run`` against that image
+    (the per-version template build artifact) instead of hosting the model call
+    in-process.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -27,6 +32,7 @@ class RunnerInput(BaseModel):
     model_path: list[str] = Field(default_factory=list)
     allowed_tools: list[str] = Field(default_factory=list)
     tool_requests: list[ToolInvocation] = Field(default_factory=list)
+    image_ref: str | None = None
 
 
 class ModelAttempt(BaseModel):
@@ -67,3 +73,19 @@ class RuntimeAgentResult(BaseModel):
     response_text: str | None = None
     tool_results: list[ToolExecutionResult] = Field(default_factory=list)
     error: str | None = None
+    execution: "ContainerExecution | None" = None
+
+
+class ContainerExecution(BaseModel):
+    """Execution metadata for docker-run based runners."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image_ref: str
+    container_name: str
+    exit_code: int | None = None
+    duration_ms: int
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    timed_out: bool = False
+    limits: dict[str, Any] = Field(default_factory=dict)

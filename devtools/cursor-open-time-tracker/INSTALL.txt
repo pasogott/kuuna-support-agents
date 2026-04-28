@@ -1,0 +1,22 @@
+Cursor Open Time Tracker — install steps (Kuuna)
+
+What it measures
+- Best-effort **focused Cursor/VS Code window time** for workspace folders.
+- While focused, it writes **5-minute checkpoints** to reduce data loss if Cursor crashes.
+
+Where it writes
+- `logs/cursor-open-time.jsonl` (gitignored)
+
+Install (recommended)
+1) Open the Kuuna repo folder in Cursor as a workspace: `.../kuuna-support-agents`
+2) Command Palette → **Extensions: Install from Location...** (wording may vary slightly)
+3) Pick this folder: `devtools/cursor-open-time-tracker`
+4) Reload Cursor if prompted
+
+Commands
+- Command Palette → **Cursor Open Time: Show Today (Output)**
+- Command Palette → **Cursor Open Time: Flush (checkpoint)** (writes a mid-session checkpoint immediately)
+
+Notes / limitations
+- If you keep Cursor focused while AFK, time will still accumulate (same limitation as any focus-based tracker).
+- If you open the same repo in multiple windows simultaneously, each window logs separately (merge by `sessionId` if needed).

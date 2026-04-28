@@ -212,6 +212,34 @@ def _classify_event_type(message_obj: Any) -> str:
     return "message_created"
 
 
+def _extract_deleted_target_message_id(message_obj: Any) -> str | None:
+    """For WhatsApp protocol revoke/delete events, try to return the *original* message ID.
+
+    Neonize delivers delete events as protocol messages; the outer event Info.ID is the protocol
+    event id, not the id of the message being deleted. If we persist that as provider_message_id,
+    the backend will create a *new* Message row, which shows up as a new bubble in the UI.
+    """
+    protocol_message = _get_present_field(message_obj, "protocolMessage")
+    if protocol_message is None:
+        return None
+
+    key_obj = _get_present_field(protocol_message, "key", "Key")
+    if key_obj is None:
+        return None
+
+    # common shapes: key.id, key.ID, key.stanzaId
+    candidate = (
+        _get_path(key_obj, "id")
+        or _get_path(key_obj, "ID")
+        or _get_path(key_obj, "Id")
+        or _get_path(key_obj, "stanzaId")
+        or _get_path(key_obj, "stanzaID")
+    )
+    if not candidate:
+        return None
+    return str(candidate)
+
+
 def _resolve_message_content(message_obj: Any) -> Any:
     direct_edited_message = _get_present_field(message_obj, "editedMessage")
     if direct_edited_message is not None:
@@ -357,6 +385,10 @@ def map_neonize_message_event(event: Any) -> dict[str, Any]:
         occurred_at = datetime.now(UTC).isoformat()
 
     event_type = _classify_event_type(message)
+    if event_type == "message_deleted":
+        deleted_target_id = _extract_deleted_target_message_id(message)
+        if deleted_target_id:
+            provider_message_id = deleted_target_id
     content_message = _resolve_message_content(message)
     reply_to, mentions = _extract_reply_and_mentions(content_message)
 

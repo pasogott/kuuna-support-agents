@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 import httpx
 
+from docker_runner import run_template_client_image
 from failover import iter_model_path
 from logging_utils import configure_json_logging
 from prompt_builder import PromptAssembly, build_prompt
@@ -270,6 +271,13 @@ def run_agent(input_data: RunnerInput | dict[str, Any]) -> RuntimeAgentResult:
         user_prompt=request.user_prompt,
         context=request.context,
     )
+
+    if (request.image_ref or "").strip():
+        logger.info(
+            "runtime_agent_run_client_template_image",
+            extra={"trace_id": trace_id, "image_ref": request.image_ref},
+        )
+        return run_template_client_image(request=request, prompt=prompt)
 
     attempts: list[ModelAttempt] = []
     model_used: str | None = None
